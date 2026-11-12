@@ -104,16 +104,24 @@ ever feel slow.
    `Remux-1080p` specifically (left everything else in that profile as-is). Sonarr's
    `HD-1080p` profile never had a Remux option to begin with, so TV didn't need the same
    fix. **Use `HD-1080p`, not `Any`, when adding movies.**
-9. **Prowlarr → Sonarr/Radarr indexer sync doesn't perfectly mirror categories.** EZTV
-   correctly didn't sync to Sonarr while it was in a Cloudflare-error state (expected —
-   unhealthy indexers don't get pushed). Separately, Pirate Bay never synced to Radarr
-   despite being healthy with a Movies category tagged — unresolved, not chased further
-   since Radarr already has 1337x + YTS for movies.
+9. **Prowlarr → Sonarr/Radarr indexer sync doesn't perfectly mirror categories.**
+   Pirate Bay never synced to Radarr despite being healthy with a Movies category
+   tagged — unresolved, not chased further since Radarr already has 1337x + YTS for
+   movies.
 10. FlareSolverr was needed to get past Cloudflare for `1337x` and `EZTV`. Wired in via
     Prowlarr → **Settings → Indexers → Indexer Proxies** → FlareSolverr →
     `http://flaresolverr:8191`. It shows up "Disabled" by default even once added —
     has to be explicitly toggled on.
-11. **Gluetun's own port-forwarding log entry for the qBittorrent sync command is
+11. **The FlareSolverr proxy is scoped by tag, not applied globally.** It only routes
+    requests for indexers that have the `flaresolverr` tag assigned (Prowlarr →
+    Settings → Indexer Proxies → the proxy's own `tags` field). `1337x` got tagged when
+    FlareSolverr was set up; `EZTV` didn't — so EZTV kept hitting Cloudflare directly
+    and failing indefinitely (looked like a flaky/unreliable Cloudflare challenge, but
+    was really just a missing tag). Fixed by adding the `flaresolverr` tag to EZTV's
+    indexer settings; confirmed in FlareSolverr's own logs that it then actually
+    received and solved the `eztvx.to` challenge. **If any future indexer needs
+    FlareSolverr, it needs this same tag — it isn't automatic.**
+12. **Gluetun's own port-forwarding log entry for the qBittorrent sync command is
     tagged `ERROR` even on success.** It's just gluetun labeling the command's stderr
     output that way regardless of outcome — the wget call itself returned exit `0` and
     HTTP `200` both times it was checked. Don't take that log line at face value; verify
@@ -141,6 +149,43 @@ correctly left off (UPnP wouldn't help here anyway — the whole point is that i
 connections now arrive straight through the VPN tunnel, not via the home router). No
 host port mapping was needed for this — the existing `6881` mapping on `gluetun` is
 unrelated/unused by the forwarded port.
+
+## Completed-download cleanup (qBittorrent seeding limits)
+
+Sonarr/Radarr's "Remove Completed Downloads" (on by default for the qBittorrent client)
+only actually removes a download once **qBittorrent itself** reports seeding as
+finished — it doesn't just remove immediately after import. With no seeding limits
+configured, qBittorrent seeds forever, so finished/imported downloads just sat in the
+client indefinitely (looked like a bug, wasn't one — just no seeding policy set).
+
+Fixed by setting global seeding limits in qBittorrent (**Tools → Options → BitTorrent →
+Seeding Limits**): ratio limit `1.0`, seeding time limit `1440` minutes (24h), action on
+limit reached left as the default **Pause** (not delete — Sonarr/Radarr do the actual
+removal once qBittorrent reports the torrent as paused/finished).
+
+## One Piece re-grab loop (anime numbering mismatch)
+
+Sonarr's queue ballooned to **120 duplicate entries**, all for the identical
+`One Piece S02 Season 2 2026 1080p NF WEBRip ... x265-Rapta` release, each one flagged
+`One or more episodes expected in this release were not imported or missing`. Root
+cause: TheTVDB lists 22 episodes for Season 2, but this release group (a Netflix-dub
+repackaging) only ever shipped 8 under that label — a release that can **never**
+satisfy Sonarr's expectation, so it kept re-grabbing the same thing forever instead of
+ever marking it "complete" and cleaning up. This is a known, long-standing One Piece
+problem (release groups, TheTVDB, and absolute numbering all disagree with each other
+across its 1000+ episodes), not specific to this setup.
+
+Fixed by bulk-clearing the stuck queue entries
+(`DELETE /api/v3/queue/bulk?removeFromClient=false`, since the already-imported files
+were fine and didn't need touching) and unmonitoring Season 2 specifically to stop
+future re-grabs. **Watch for this pattern on any show with messy source numbering**
+(anime especially) — a queue that keeps growing with duplicates of the same release is
+the tell, and unmonitoring the specific offending season is the fix, not troubleshooting
+the download itself.
+
+Separately found and manually cleaned up: several *fully* complete, already-imported
+downloads (unrelated to the loop above) were still sitting in qBittorrent — caused by
+the seeding-limits issue above, not a second bug.
 
 ## Per-app setup notes
 
