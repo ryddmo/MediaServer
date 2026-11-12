@@ -113,6 +113,34 @@ ever feel slow.
     Prowlarr → **Settings → Indexers → Indexer Proxies** → FlareSolverr →
     `http://flaresolverr:8191`. It shows up "Disabled" by default even once added —
     has to be explicitly toggled on.
+11. **Gluetun's own port-forwarding log entry for the qBittorrent sync command is
+    tagged `ERROR` even on success.** It's just gluetun labeling the command's stderr
+    output that way regardless of outcome — the wget call itself returned exit `0` and
+    HTTP `200` both times it was checked. Don't take that log line at face value; verify
+    against qBittorrent's actual `listen_port` (via its API) instead.
+
+## PIA port forwarding
+
+Enabled on Gluetun directly (`VPN_PORT_FORWARDING=on`, `PORT_FORWARD_ONLY=true` so it
+only picks PIA servers that support it). Kept `DE Frankfurt` as the region — it does
+support forwarding.
+
+The forwarded port changes each time it's (re)assigned, so qBittorrent's listening port
+is kept in sync **automatically** via `VPN_PORT_FORWARDING_UP_COMMAND` /
+`..._DOWN_COMMAND` on the `gluetun` service — these call qBittorrent's own API
+(`POST /api/v2/app/setPreferences`) from inside gluetun's container, hitting
+`127.0.0.1:8080` since qBittorrent shares its network namespace.
+
+**Requires** qBittorrent's **Tools → Options → WebUI → "Bypass authentication for
+clients on localhost"** to be enabled — safe here since that only ever accepts calls
+from inside the same private container network namespace, never anywhere external.
+
+Confirmed working end to end: PIA assigned port `43217`, qBittorrent's
+`listen_port` was automatically updated to match, with `random_port`/`upnp` both
+correctly left off (UPnP wouldn't help here anyway — the whole point is that inbound
+connections now arrive straight through the VPN tunnel, not via the home router). No
+host port mapping was needed for this — the existing `6881` mapping on `gluetun` is
+unrelated/unused by the forwarded port.
 
 ## Per-app setup notes
 
@@ -154,10 +182,6 @@ with real traffic.
 
 ## Open follow-ups
 
-- Old `subtitle_fetch.py` cron job (from the DS214play era) — being disabled now that
-  Bazarr covers this, to avoid both hitting OpenSubtitles' rate limit at once.
-- PIA port forwarding for faster BT speeds — carried over as an open TODO from the
-  DS214play era, still not done.
 - Whether to eventually retire Plex now that Jellyfin works well — no decision made,
   running both indefinitely for now.
 - Remote (Tailscale) access to these web UIs — currently LAN-only by design, revisit if
