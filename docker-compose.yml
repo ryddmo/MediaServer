@@ -21,8 +21,8 @@ services:
       - TZ=${TZ}
       - VPN_PORT_FORWARDING=on
       - PORT_FORWARD_ONLY=true
-      - 'VPN_PORT_FORWARDING_UP_COMMAND=/bin/sh -c ''wget -O- -nv --retry-connrefused --post-data "json={\"listen_port\":{{PORT}},\"current_network_interface\":\"{{VPN_INTERFACE}}\",\"random_port\":false,\"upnp\":false}" http://127.0.0.1:8080/api/v2/app/setPreferences'''
-      - 'VPN_PORT_FORWARDING_DOWN_COMMAND=/bin/sh -c ''wget -O- -nv --retry-connrefused --post-data "json={\"listen_port\":0,\"current_network_interface\":\"lo\"}" http://127.0.0.1:8080/api/v2/app/setPreferences'''
+      - 'VPN_PORT_FORWARDING_UP_COMMAND=/bin/sh -c ''wget -O- -nv --retry-connrefused --post-data "json={\"listen_port\":{{PORT}},\"current_network_interface\":\"{{VPN_INTERFACE}}\",\"random_port\":false,\"upnp\":false}" http://127.0.0.1:8080/api/v2/app/setPreferences; wget -qO- --header "Title: Gluetun killswitch cleared" --header "Priority: default" --header "Tags: white_check_mark" --post-data "Port forwarding recovered - qBittorrent back on {{VPN_INTERFACE}}, listening on port {{PORT}}" https://notify.ryddmo.se/ugreen-vpn-killswitch'''
+      - 'VPN_PORT_FORWARDING_DOWN_COMMAND=/bin/sh -c ''wget -O- -nv --retry-connrefused --post-data "json={\"listen_port\":0,\"current_network_interface\":\"lo\"}" http://127.0.0.1:8080/api/v2/app/setPreferences; wget -qO- --header "Title: Gluetun killswitch engaged" --header "Priority: urgent" --header "Tags: rotating_light" --post-data "qBittorrent forced onto lo - port forwarding is down, torrent traffic is blocked until it recovers" https://notify.ryddmo.se/ugreen-vpn-killswitch'''
     volumes:
       - /volume2/docker/appdata/gluetun:/gluetun
     restart: unless-stopped
