@@ -351,17 +351,34 @@ to the home LAN, Tailscale or not. Hence the NAS-native script instead.
   the `vps` repo's `STATUS.md`), so a dead `ntfy` container gets noticed. This still
   doesn't cover the VPS being fully down/unreachable (Uptime Kuma dies with it) — no
   fallback exists for *that* case yet.
-- **Naming collision, needs a decision**: the `systemarkitekt` skill added this session
-  (`~/.claude/skills/systemarkitekt/`, scoped to this NAS stack) turns out to collide
-  with an existing, unrelated `systemarkitekt` skill scoped to the separate `plugg` repo
-  (Plugg-app architecture planning, nothing to do with the NAS). The `vps`/`plugg`
-  ecosystem already uses `infra-arkitekt` as the equivalent name specifically to avoid
-  this collision. Likely fix: rename this one to something in the same family (e.g.
-  `nas-arkitekt`) — not done yet, see `vps` repo's `STATUS.md` for the full note.
-- **The NAS's scheduled health check (`ugreen-systemarkitekt.timer`) is a dumb shell
-  script with no LLM judgment**, built on the reasoning that neither Claude Code's cloud
-  routines nor `CronCreate` can reach the home LAN. That's true, but the `vps` repo
-  already solved the same problem differently and better for the VPS: a macOS `launchd`
-  LaunchAgent on Stefan's own Mac running `claude -p` headless (full judgment layer,
-  truly unattended). Worth considering switching the NAS's scheduled check to the same
-  pattern instead — not done, needs a decision.
+- **Naming collision — fixed.** The old global `systemarkitekt` skill (which collided
+  with an unrelated, existing `systemarkitekt` skill in the separate `plugg` repo) has
+  been removed and split into two repo-scoped skills here instead, matching the
+  `vps`/`plugg` ecosystem's own `infra-arkitekt`/`vps-underhall` convention:
+  `.claude/skills/nas-arkitekt/` (architecture planning) and
+  `.claude/skills/nas-underhall/` (periodic health check).
+- **Scheduled health check — attempted the `launchd`+`claude -p` switch, currently
+  blocked.** The old `ugreen-systemarkitekt.timer` (dumb shell script, no LLM judgment)
+  is disabled. Its replacement — `scripts/nas-underhall.sh` run by a new
+  `com.ryddmo.nas-underhall` `launchd` LaunchAgent on Stefan's Mac, mirroring the `vps`
+  repo's working `vps-underhall` pattern — is wired up but fails to even start
+  (`Operation not permitted`, exit 126): a macOS background-item/TCC permission gate on
+  the newly-created LaunchAgent, one layer deeper than Login Items & Extensions (which
+  already shows it allowed). Paused mid-troubleshoot to prioritize the 1Password SSH
+  work below. Next step: check **System Settings → Privacy & Security → Files and
+  Folders / Full Disk Access** for a `bash` entry, or fall back to a fixed version of the
+  old systemd timer if the macOS approval dance isn't worth it. The old timer's leftover
+  unit files on the NAS (`/etc/systemd/system/ugreen-systemarkitekt.{timer,service}`,
+  `/usr/local/bin/ugreen-systemarkitekt-check.sh`) are disabled but still present —
+  couldn't `rm` them (not in the NOPASSWD sudo scope, and routing around it was correctly
+  blocked as privilege escalation); harmless clutter, a `sudo rm` from Stefan's own
+  terminal whenever convenient.
+- **New: 1Password SSH Agent now gates every SSH connection to `ugreen` and `vps` behind
+  a live, per-connection approval** — set up specifically as a control point before
+  granting Claude Code any broader standing permissions on either host. Full detail,
+  including the four live verifications, is in the `vps` repo's `STATUS.md` (not
+  duplicated here since it's a Mac-side/cross-host change, not NAS-specific). Means: any
+  future `ssh ugreen`/`ssh vps` command — from this repo's workflows or anywhere else —
+  now needs Stefan to approve it in 1Password first. **Not yet decided**: whether to also
+  walk back `ugreen`'s passwordless `sudo` scope to require the same kind of live
+  approval for privileged actions, not just the SSH connection itself.
