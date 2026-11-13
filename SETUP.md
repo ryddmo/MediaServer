@@ -126,6 +126,32 @@ ever feel slow.
     output that way regardless of outcome — the wget call itself returned exit `0` and
     HTTP `200` both times it was checked. Don't take that log line at face value; verify
     against qBittorrent's actual `listen_port` (via its API) instead.
+13. **qBittorrent silently stopped downloading for ~11 hours (2026-11-13) — not a
+    tracker/VPN problem, an interface-binding one.** `VPN_PORT_FORWARDING_DOWN_COMMAND`
+    deliberately forces qBittorrent's `current_network_interface` to `lo` whenever port
+    forwarding isn't healthy (a soft kill-switch, so torrent traffic can't leak outside
+    the tunnel). That morning, gluetun's OpenVPN tunnel flapped several times → each
+    teardown fired `DOWN_COMMAND` → qBittorrent got parked on `lo` → the final
+    reconnect's port-forward startup then crashed outright on a PIA-side bug (see below),
+    and because the *old* `gluetun:latest` image crashed instead of retrying,
+    `UP_COMMAND` never fired again to restore `tun0`. Result: qBittorrent sat dead on
+    `lo` for 11 hours with **zero errors in qBittorrent's own log** — it looked exactly
+    like a dead tracker/VPN issue, not an interface problem. Fixed by: (a) manually
+    resetting `Session\Interface`/`Session\InterfaceName` back to `tun0` in
+    `qBittorrent.conf` (had to stop the container first, edit via a throwaway root
+    container on the same volume, then restart — editing it live risks qBittorrent's own
+    shutdown overwriting the fix), and (b) pulling a newer `gluetun:latest` image, which
+    fixed the crash-forever bug (now retries the port-forward negotiation automatically
+    every 15–60s without touching `DOWN_COMMAND`/`UP_COMMAND` on a merely-failed-to-start
+    attempt). **If downloads ever go dead again with 0 peers/seeds across every torrent,
+    check `Session\Interface` in `qBittorrent.conf` before anything else** — it won't
+    show up as an error anywhere.
+
+## PIA subscription
+
+Runs until **2027-09-22**. qBittorrent only works through this tunnel (kill-switch
+enforced — see gotcha #13), so torrenting stops entirely once it lapses, unless renewed
+or a replacement VPN provider is configured in this repo's `docker-compose.yml`.
 
 ## PIA port forwarding
 
@@ -149,6 +175,21 @@ correctly left off (UPnP wouldn't help here anyway — the whole point is that i
 connections now arrive straight through the VPN tunnel, not via the home router). No
 host port mapping was needed for this — the existing `6881` mapping on `gluetun` is
 unrelated/unused by the forwarded port.
+
+**Known, accepted, ongoing issue (as of 2026-11-13): PIA's Frankfurt gateway has a
+recurring TLS cert bug that breaks port-forward renegotiation.** Gluetun's attempt to
+find the port-forward API address fails with
+`tls: failed to verify certificate: x509: certificate is valid for Server-X-4a, not
+Server-X-2a` — the gateway IP answers with a cert for a different logical server than
+the one the OpenVPN session is actually on. This is upstream/PIA-side, not a gluetun or
+compose misconfiguration. On the current (updated) gluetun image it retries forever
+every 15–60s without crashing or touching qBittorrent's interface — so **downloads keep
+working** even while this is active, only inbound-peer efficiency is reduced. Considered
+switching PIA from OpenVPN to WireGuard (gluetun's own recommended fix for this exact
+bug class) but decided against it for now — smaller blast radius to just live with it
+and get notified (see ntfy section below) than to re-verify the whole VPN/killswitch
+chain under a different protocol. Revisit if the "recovered" ntfy alert stops firing for
+an extended period.
 
 ## Completed-download cleanup (qBittorrent seeding limits)
 
@@ -225,9 +266,85 @@ container left qBittorrent's network namespace with **no route to the internet a
 (tested against a raw IP, not just a DNS failure) — confirmed no leak before trusting it
 with real traffic.
 
+## ntfy alerting (added 2026-11-13)
+
+Self-hosted ntfy at `https://notify.ryddmo.se/` — runs on the `vps` host
+(`kind-puma`, reached over Tailscale, see the `nas` repo's memory/docs for that box).
+**This is a single point of failure for every alert below**: if that VPS goes down, all
+three topics go silent simultaneously, with no fallback channel to say so.
+
+Three topics in use:
+
+| Topic | Fires on | Source |
+|---|---|---|
+| `ugreen-vpn-killswitch` | gluetun forcing qBittorrent onto `lo` (down) / restoring `tun0` (up) | `VPN_PORT_FORWARDING_DOWN_COMMAND`/`_UP_COMMAND` in this repo's `docker-compose.yml` |
+| `ugreen-system-updates` | host OS security/stable package upgrades installed, or a reboot becomes required | `/usr/local/bin/ugreen-unattended-upgrade-notify.sh` on the NAS (see below) |
+| `ugreen-architect` | the daily deterministic health check finds something wrong | `/usr/local/bin/ugreen-systemarkitekt-check.sh` on the NAS (see below) |
+
+Added directly because of gotcha #13 above — the entire point is that the silent
+11-hour outage shouldn't be able to repeat invisibly. All three are deliberately
+**silent on success**; they only speak up when something actually needs attention.
+
+## Host OS unattended upgrades (added 2026-11-13)
+
+The NAS's underlying Debian 12 (bookworm) base doesn't actually ship a working
+`apt-daily-upgrade.timer`/`.service` — `dpkg` thinks they're installed (they're in the
+`apt` package's file list) but the actual unit files are missing from disk, seemingly
+stripped from Ugreen's base image on purpose (likely to avoid generic Debian
+auto-upgrades fighting their own vendor update channel). Rather than try to resurrect
+vendor-removed functionality, a separate, fully custom mechanism was set up instead:
+
+- `unattended-upgrades` package installed, with `/etc/apt/apt.conf.d/50unattended-upgrades`
+  appended (not replaced) with NAS-specific safety overrides:
+  - `Unattended-Upgrade::Package-Blacklist` adds `linux-image-`, `linux-headers-`,
+    `docker-ce`, `docker-ce-cli`, `containerd.io` — these have hand-tuned
+    configs/overrides from this stack's own setup (gotchas #1–#3 above, plus the kernel
+    itself) and must not get silently upgraded out from under them. These packages will
+    always show up as "pending" in `apt list --upgradable` — that's expected, they need
+    **manual** review, not automatic.
+  - `Unattended-Upgrade::Automatic-Reboot "false"` — never auto-reboot a NAS serving
+    Jellyfin/qBittorrent/etc. unattended; the notify script flags if a reboot becomes
+    required so it can be done deliberately instead.
+- Own systemd units (`/etc/systemd/system/ugreen-unattended-upgrade.{service,timer}`),
+  daily at 04:30 (±20min), calling `/usr/local/bin/ugreen-unattended-upgrade-notify.sh`
+  — runs `unattended-upgrade -v`, then posts to `ugreen-system-updates` if anything was
+  installed or a reboot is now required, or if the run itself failed.
+- **First real run (during setup) installed ~110 packages** in one go — a large backlog
+  had accumulated, including some sensitive ones (`grub-efi-amd64-signed`,
+  `shim-signed`, `systemd`, `bash`, `postgresql-15`). All verified healthy afterward (no
+  errors, `InstCount=0 DelCount=0 BrokenCount=0` on the next check, all containers still
+  up) — mentioned here so it isn't a surprise if the dpkg changelog/history looks like a
+  lot happened at once on that date.
+
+## systemarkitekt (added 2026-11-13)
+
+Two halves, one purpose — catching silent breakage/staleness before it compounds, same
+motivation as gotcha #13:
+
+- **Manual**: the `/systemarkitekt` skill (`~/.claude/skills/systemarkitekt/SKILL.md` on
+  Stefan's Mac) — an on-demand, judgment-based architecture review covering this repo,
+  the `nas` repo, and the `vps` host. Run it whenever a "is anything outdated/risky on
+  the NAS?" check is wanted.
+- **Scheduled**: `/usr/local/bin/ugreen-systemarkitekt-check.sh` on the NAS itself, via
+  `ugreen-systemarkitekt.timer` (daily 09:00 ±15min — deliberately after the 04:30
+  unattended-upgrades run, so it can catch anything that run left pending). Deterministic
+  shell checks only (no LLM judgment involved, since this runs unattended): qBittorrent's
+  `Session\Interface`, container health/restart counts, `/volume2` disk headroom, and
+  whether the upgrade timer itself is healthy. Silent unless it finds something, same
+  pattern as the ntfy alerts above.
+
+A cloud-scheduled version (Claude Code's cron-based "routines") was considered first but
+doesn't work here — those run in Anthropic's sandboxed cloud infra with no network path
+to the home LAN, Tailscale or not. Hence the NAS-native script instead.
+
 ## Open follow-ups
 
 - Whether to eventually retire Plex now that Jellyfin works well — no decision made,
   running both indefinitely for now.
 - Remote (Tailscale) access to these web UIs — currently LAN-only by design, revisit if
   ever wanted.
+- The PIA Frankfurt port-forwarding cert bug (see above) — living with it for now,
+  revisit switching to WireGuard if it stops self-resolving.
+- `ugreen-architect`/`ugreen-system-updates`/`ugreen-vpn-killswitch` all depend on the
+  same VPS for ntfy — no fallback alert channel exists if that VPS itself goes down. Not
+  addressed yet, just flagged.
