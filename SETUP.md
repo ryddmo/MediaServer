@@ -346,5 +346,22 @@ to the home LAN, Tailscale or not. Hence the NAS-native script instead.
 - The PIA Frankfurt port-forwarding cert bug (see above) — living with it for now,
   revisit switching to WireGuard if it stops self-resolving.
 - `ugreen-architect`/`ugreen-system-updates`/`ugreen-vpn-killswitch` all depend on the
-  same VPS for ntfy — no fallback alert channel exists if that VPS itself goes down. Not
-  addressed yet, just flagged.
+  same VPS for ntfy — **partially addressed**: that VPS already runs Uptime Kuma, whose
+  own "Ntfy" monitor now alerts via a separate Gmail channel instead of ntfy itself (see
+  the `vps` repo's `STATUS.md`), so a dead `ntfy` container gets noticed. This still
+  doesn't cover the VPS being fully down/unreachable (Uptime Kuma dies with it) — no
+  fallback exists for *that* case yet.
+- **Naming collision, needs a decision**: the `systemarkitekt` skill added this session
+  (`~/.claude/skills/systemarkitekt/`, scoped to this NAS stack) turns out to collide
+  with an existing, unrelated `systemarkitekt` skill scoped to the separate `plugg` repo
+  (Plugg-app architecture planning, nothing to do with the NAS). The `vps`/`plugg`
+  ecosystem already uses `infra-arkitekt` as the equivalent name specifically to avoid
+  this collision. Likely fix: rename this one to something in the same family (e.g.
+  `nas-arkitekt`) — not done yet, see `vps` repo's `STATUS.md` for the full note.
+- **The NAS's scheduled health check (`ugreen-systemarkitekt.timer`) is a dumb shell
+  script with no LLM judgment**, built on the reasoning that neither Claude Code's cloud
+  routines nor `CronCreate` can reach the home LAN. That's true, but the `vps` repo
+  already solved the same problem differently and better for the VPS: a macOS `launchd`
+  LaunchAgent on Stefan's own Mac running `claude -p` headless (full judgment layer,
+  truly unattended). Worth considering switching the NAS's scheduled check to the same
+  pattern instead — not done, needs a decision.
